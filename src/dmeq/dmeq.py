@@ -3,8 +3,6 @@ config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax.lax import fori_loop
 
-dtype = jnp.float32
-
 def _default_parameters():
     return {
         'EIR': 33.,
@@ -54,7 +52,7 @@ def _default_parameters():
         'Q0': 0.92
     }
 
-def _solve(p):
+def _solve(p, dtype = jnp.float32):
     ages = jnp.arange(100, dtype=dtype)
     nodes = jnp.array([
         -4.8594628,
@@ -120,7 +118,8 @@ def _solve(p):
                     psi,
                     age20,
                     p,
-                    zeta[i]
+                    zeta[i],
+                    dtype
                 ) * weights[i],
             prev
         ),
@@ -137,14 +136,15 @@ def _non_het_prev(
         psi,
         age20,
         p,
-        zeta
+        zeta,
+        dtype
     ):
     # rate of ageing plus death
     re = r + p['eta']
 
     # calculate pre-erythrocytic immunity IB
     eps = p['EIR']/365. * zeta * psi
-    ib = _calculate_immunity(eps, p['ub'], p['db'], re)
+    ib = _calculate_immunity(eps, p['ub'], p['db'], re, dtype)
 
     b = p['b0']*(p['b1'] + (1-p['b1'])/(1+(ib/p['IB0'])**p['kb']))
 
@@ -153,8 +153,8 @@ def _non_het_prev(
 
     # calculate probability that an asymptomatic infection (state A) will be
     # detected by microscopy
-    ic = _calculate_immunity(foi, p['uc'], p['dc'], re)
-    id_ = _calculate_immunity(foi, p['ud'], p['dd'], re)
+    ic = _calculate_immunity(foi, p['uc'], p['dc'], re, dtype)
+    id_ = _calculate_immunity(foi, p['ud'], p['dd'], re, dtype)
     fd = 1 - (1-p['fd0'])/(1 + (age_days_midpoint/p['ad0'])**p['gd'])
     q = p['d1'] + (1-p['d1'])/(1 + (id_/p['ID0'])**p['kd']*fd)
 
@@ -213,7 +213,7 @@ def _non_het_prev(
     return jnp.stack([pos_M, inc])
 
 
-def _calculate_immunity(foi, rate, delay, re):
+def _calculate_immunity(foi, rate, delay, re, dtype):
     imm = jnp.full(
         len(foi),
         (foi[0]/(foi[0] * rate + 1))/(1/delay + re[0]),
