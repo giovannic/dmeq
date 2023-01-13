@@ -1,8 +1,11 @@
+from jax.config import config
+config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax.lax import fori_loop
-from jax import debug
 
-def default_parameters():
+dtype = jnp.float32
+
+def _default_parameters():
     return {
         'EIR': 33.,
         'ft': 0.,
@@ -51,8 +54,8 @@ def default_parameters():
         'Q0': 0.92
     }
 
-def solve(p):
-    ages = jnp.arange(100)
+def _solve(p):
+    ages = jnp.arange(100, dtype=dtype)
     nodes = jnp.array([
         -4.8594628,
         -3.5818235,
@@ -64,7 +67,7 @@ def solve(p):
         2.4843258,
         3.5818235,
         4.8594628
-    ])
+    ], dtype=dtype)
     weights = jnp.array([
         4.310653e-06,
         7.580709e-04,
@@ -76,7 +79,7 @@ def solve(p):
         1.911158e-02,
         7.580709e-04,
         4.310653e-06
-    ])
+    ], dtype=dtype)
     age_days = ages * 365.
     age_diff = jnp.diff(age_days)
     age_days_midpoint = jnp.append(
@@ -87,7 +90,7 @@ def solve(p):
     r = jnp.append(1. / age_diff, 0.)
 
     # calculate proportion in each age group
-    prop = jnp.full(ages.size, p['eta'] / (r + p['eta']))
+    prop = jnp.full(ages.size, p['eta'] / (r + p['eta']), dtype=dtype)
     prop = fori_loop(
         1,
         prop.size,
@@ -101,7 +104,7 @@ def solve(p):
     # calculate EIR scaling factor over Gaussian quadrature nodes
     zeta = jnp.exp(-p['s2']*.5 + jnp.sqrt(p['s2'])*nodes)
 
-    prev = jnp.zeros((2, len(ages))) # prevalence and incidence
+    prev = jnp.zeros((2, len(ages)), dtype=dtype) # prevalence and incidence
 
     # TODO: vectorize instead of loop
     return fori_loop(
@@ -146,9 +149,7 @@ def _non_het_prev(
 
     # calculate probability that an asymptomatic infection (state A) will be
     # detected by microscopy
-    debug.print("starting ic")
     ic = _calculate_immunity(foi, p['uc'], p['dc'], re)
-    debug.print("ending ic")
     id_ = _calculate_immunity(foi, p['ud'], p['dd'], re)
     fd = 1 - (1-p['fd0'])/(1 + (age_days_midpoint/p['ad0'])**p['gd'])
     q = p['d1'] + (1-p['d1'])/(1 + (id_/p['ID0'])**p['kd']*fd)
@@ -172,13 +173,6 @@ def _non_het_prev(
         1 + ((ic+icm)/p['IC0'])**p['kc']
     ))
 
-
-    debug.print("zeta {}", zeta)
-    debug.print("foi {}", foi)
-    debug.print("phi {}", phi)
-    debug.print("ic {}", ic)
-    debug.print("icm {}", icm)
-
     # calculate equilibrium solution of all model states.
 
     # calculate beta values
@@ -193,7 +187,7 @@ def _non_het_prev(
     aP = p['rT'] * aT/betaP
     aD = (1-p['ft'])*phi*foi/betaD
 
-    states = jnp.zeros((6, len(age_days_midpoint)))
+    states = jnp.zeros((6, len(age_days_midpoint)), dtype=dtype)
     states = states.at[:,0].set(
         _compute_state(0, 0, 0, 0, 0, 0, betaT,
               betaD, betaP, betaA, betaU, aT, aD, aP, phi, foi, prop, p)
@@ -218,7 +212,8 @@ def _non_het_prev(
 def _calculate_immunity(foi, rate, delay, re):
     imm = jnp.full(
         len(foi),
-        (foi[0]/(foi[0] * rate + 1))/(1/delay + re[0])
+        (foi[0]/(foi[0] * rate + 1))/(1/delay + re[0]),
+        dtype=dtype
     )
     # TODO: why does this not work?
     # return fori_loop(
@@ -238,7 +233,6 @@ def _calculate_immunity(foi, rate, delay, re):
     
 
 def _next_immunity(foi, rate, re, imm, delay):
-    debug.print("foi: {}, previous: {}, rate: {}, re: {}", foi, imm, rate, re)
     return (foi/(foi * rate + 1) + re*imm)/(1/delay + re)
 
 def _next_state(states, i, betaT, betaD, betaP, betaA, betaU, aT, aD, aP, phi,
