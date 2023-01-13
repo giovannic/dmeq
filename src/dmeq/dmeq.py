@@ -107,21 +107,25 @@ def _solve(p):
     prev = jnp.zeros((2, len(ages)), dtype=dtype) # prevalence and incidence
 
     # TODO: vectorize instead of loop
-    return fori_loop(
-        0,
-        len(zeta),
-        lambda i, a: a + _non_het_prev(
-                age_days,
-                age_days_midpoint,
-                age_diff,
-                prop,
-                r,
-                psi,
-                age20,
-                p,
-                zeta[i]
-            ) * weights[i],
-        prev
+    return jnp.append(
+        fori_loop(
+            0,
+            len(zeta),
+            lambda i, a: a + _non_het_prev(
+                    age_days,
+                    age_days_midpoint,
+                    age_diff,
+                    prop,
+                    r,
+                    psi,
+                    age20,
+                    p,
+                    zeta[i]
+                ) * weights[i],
+            prev
+        ),
+        jnp.expand_dims(prop, 0),
+        axis = 0
     )
 
 def _non_het_prev(
