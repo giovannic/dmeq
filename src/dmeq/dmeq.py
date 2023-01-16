@@ -1,7 +1,7 @@
 from jax.config import config
 config.update("jax_enable_x64", True)
 import jax.numpy as jnp
-from jax.lax import fori_loop
+from jax.lax import fori_loop, scan
 from jax import vmap
 
 def _default_parameters():
@@ -229,27 +229,15 @@ def _non_het_prev(
 
 
 def _calculate_immunity(foi, rate, delay, re, dtype):
-    imm = jnp.full(
-        len(foi),
-        (foi[0]/(foi[0] * rate + 1))/(1/delay + re[0]),
-        dtype=dtype
+    init_imm = (foi[0]/(foi[0] * rate + 1))/(1/delay + re[0])
+    _, other_imm = scan(
+        lambda prev_imm, i: (
+            _next_immunity(foi[i], rate, re[i], prev_imm, delay),
+        ) * 2,
+        init_imm,
+        jnp.arange(1, len(foi))
     )
-    # TODO: why does this not work?
-    # return fori_loop(
-        # 1,
-        # len(imm),
-        # lambda i, a: a.at[i].set(
-            # _next_immunity(foi[i], rate, re[i], imm[i-1], delay)
-        # ),
-        # imm
-    # )
-    for i in range(len(imm)):
-        imm = imm.at[i].set(
-            _next_immunity(foi[i], rate, re[i], imm[i-1], delay)
-        )
-   
-    return imm
-    
+    return jnp.append(init_imm, other_imm)
 
 def _next_immunity(foi, rate, re, imm, delay):
     return (foi/(foi * rate + 1) + re*imm)/(1/delay + re)
