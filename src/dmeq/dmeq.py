@@ -2,6 +2,7 @@ from jax.config import config
 config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax.lax import fori_loop
+from jax import vmap
 
 def _default_parameters():
     return {
@@ -105,25 +106,39 @@ def _solve(p, dtype = jnp.float32):
     prev = jnp.zeros((2, len(ages)), dtype=dtype) # prevalence and incidence
 
     # TODO: vectorize instead of loop
+
+    het_prev = vmap(
+        _non_het_prev,
+        in_axes = [
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0, # zeta
+            None
+        ]
+    )
     return jnp.append(
-        fori_loop(
-            0,
-            len(zeta),
-            lambda i, a: a + _non_het_prev(
-                    age_days,
-                    age_days_midpoint,
-                    age_diff,
-                    prop,
-                    r,
-                    psi,
-                    age20,
-                    p,
-                    zeta[i],
-                    dtype
-                ) * weights[i],
-            prev
-        ),
-        jnp.expand_dims(prop, 0),
+        jnp.sum(
+            het_prev(
+                age_days,
+                age_days_midpoint,
+                age_diff,
+                prop,
+                r,
+                psi,
+                age20,
+                p,
+                zeta,
+                dtype
+            ) * jnp.expand_dims(weights, [1,2]),
+            axis = 0
+        ), # prev and incidence statistics
+        jnp.expand_dims(prop, 0), # proportions
         axis = 0
     )
 
