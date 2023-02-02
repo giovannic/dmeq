@@ -105,8 +105,6 @@ def _solve(p, dtype = jnp.float32):
 
     prev = jnp.zeros((2, len(ages)), dtype=dtype) # prevalence and incidence
 
-    # TODO: vectorize instead of loop
-
     het_prev = vmap(
         _non_het_prev,
         in_axes = [
@@ -212,6 +210,7 @@ def _non_het_prev(
               betaD, betaP, betaA, betaU, aT, aD, aP, phi, foi, prop, p)
     )
 
+    # calculate states
     states = fori_loop(
         1,
         states.shape[1],
@@ -223,9 +222,12 @@ def _non_het_prev(
     )
 
 
+    # calculate prevalence/incidence
     pos_M = states[0] + states[1] + states[3] * q
     inc = (states[5] + states[4] + states[3]) * foi * phi
-    return jnp.stack([pos_M, inc])
+
+    # stack the return values
+    return jnp.stack([pos_M, inc, b, phi, q])
 
 
 def _calculate_immunity(foi, rate, delay, re, dtype):
