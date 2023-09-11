@@ -178,7 +178,7 @@ def _non_het_prev(
     # assumed to be at birth a proportion of the acquired immunity of a
     # 20 year old
     icm = jnp.append(
-        ic[age20] * p['dm'] / age_diff * (
+        ic[age20] * p['PM'] * p['dm'] / age_diff * (
             jnp.exp(-age_days[:-1] / p['dm']) - jnp.exp(-age_days[1:] / p['dm'])
         ),
         0.
