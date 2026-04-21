@@ -53,8 +53,17 @@ def _default_parameters():
         'Q0': 0.92
     }
 
-def _solve(p, dtype = jnp.float32):
-    ages = jnp.arange(100, dtype=dtype)
+def _solve(
+    p,
+    dtype=jnp.float32,
+    age_bins_years=None,
+    gh_nodes=None,
+    gh_weights=None,
+):
+    if age_bins_years is None:
+        ages = jnp.arange(100, dtype=dtype)
+    else:
+        ages = jnp.asarray(age_bins_years, dtype=dtype)
     nodes = jnp.array([
         -4.8594628,
         -3.5818235,
@@ -79,13 +88,17 @@ def _solve(p, dtype = jnp.float32):
         7.580709e-04,
         4.310653e-06
     ], dtype=dtype)
+    if gh_nodes is not None:
+        nodes = jnp.asarray(gh_nodes, dtype=dtype)
+    if gh_weights is not None:
+        weights = jnp.asarray(gh_weights, dtype=dtype)
     age_days = ages * 365.
     age_diff = jnp.diff(age_days)
     age_days_midpoint = jnp.append(
         age_days[:-1] + age_diff / 2.,
         age_days[-1]
     )
-    age20 : int = 20
+    age20 = jnp.argmin(jnp.abs(ages - 20.0))
     r = jnp.append(1. / age_diff, 0.)
 
     # calculate proportion in each age group
@@ -103,7 +116,7 @@ def _solve(p, dtype = jnp.float32):
     # calculate EIR scaling factor over Gaussian quadrature nodes
     zeta = jnp.exp(-p['s2']*.5 + jnp.sqrt(p['s2'])*nodes)
 
-    prev = jnp.zeros((2, len(ages)), dtype=dtype) # prevalence and incidence
+    prev = jnp.zeros((3, len(ages)), dtype=dtype) # prevalence M/PCR and incidence
 
     het_prev = vmap(
         _non_het_prev,
@@ -224,10 +237,11 @@ def _non_het_prev(
 
     # calculate prevalence/incidence
     pos_M = states[0] + states[1] + states[3] * q
+    pos_PCR = states[0] + states[1] + states[3] * (q**p['aA']) + states[4] * (q**p['aU'])
     inc = (states[5] + states[4] + states[3]) * foi * phi
 
     # stack the return values
-    return jnp.stack([pos_M, inc, b, phi, q])
+    return jnp.stack([pos_M, pos_PCR, inc, b, phi, q])
 
 
 def _calculate_immunity(foi, rate, delay, re, dtype):
