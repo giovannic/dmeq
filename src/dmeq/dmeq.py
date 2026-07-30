@@ -1,8 +1,17 @@
-from jax import config
-config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax.lax import fori_loop, scan
 from jax import vmap
+
+def _resolve_dtype(dtype):
+    """Float dtype to solve in.
+
+    ``None`` means "whatever JAX is configured for": float64 when the caller has
+    enabled ``jax_enable_x64``, float32 otherwise. Importing this module never
+    changes that setting -- it is the caller's to make.
+    """
+    if dtype is None:
+        return jnp.result_type(float)
+    return jnp.dtype(dtype)
 
 def _default_parameters():
     return {
@@ -55,11 +64,12 @@ def _default_parameters():
 
 def _solve(
     p,
-    dtype=jnp.float32,
+    dtype=None,
     age_bins_years=None,
     gh_nodes=None,
     gh_weights=None,
 ):
+    dtype = _resolve_dtype(dtype)
     if age_bins_years is None:
         ages = jnp.arange(100, dtype=dtype)
     else:
@@ -118,35 +128,25 @@ def _solve(
 
     prev = jnp.zeros((3, len(ages)), dtype=dtype) # prevalence M/PCR and incidence
 
+    # vmap over the quadrature nodes only; everything else (including dtype) is
+    # closed over, so no non-array argument has to travel through vmap.
     het_prev = vmap(
-        _non_het_prev,
-        in_axes = [
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            0, # zeta
-            None
-        ]
+        lambda zeta_i: _non_het_prev(
+            age_days,
+            age_days_midpoint,
+            age_diff,
+            prop,
+            r,
+            psi,
+            age20,
+            p,
+            zeta_i,
+            dtype
+        )
     )
     return jnp.append(
         jnp.sum(
-            het_prev(
-                age_days,
-                age_days_midpoint,
-                age_diff,
-                prop,
-                r,
-                psi,
-                age20,
-                p,
-                zeta,
-                dtype
-            ) * jnp.expand_dims(weights, [1,2]),
+            het_prev(zeta) * jnp.expand_dims(weights, [1,2]),
             axis = 0
         ), # prev and incidence statistics
         jnp.expand_dims(prop, 0), # proportions
@@ -170,7 +170,7 @@ def _non_het_prev(
 
     # calculate pre-erythrocytic immunity IB
     eps = p['EIR']/365. * zeta * psi
-    ib = _calculate_immunity(eps, p['ub'], p['db'], re, dtype)
+    ib = _calculate_immunity(eps, p['ub'], p['db'], re)
 
     b = p['b0']*(p['b1'] + (1-p['b1'])/(1+(ib/p['IB0'])**p['kb']))
 
@@ -179,8 +179,8 @@ def _non_het_prev(
 
     # calculate probability that an asymptomatic infection (state A) will be
     # detected by microscopy
-    ic = _calculate_immunity(foi, p['uc'], p['dc'], re, dtype)
-    id_ = _calculate_immunity(foi, p['ud'], p['dd'], re, dtype)
+    ic = _calculate_immunity(foi, p['uc'], p['dc'], re)
+    id_ = _calculate_immunity(foi, p['ud'], p['dd'], re)
     fd = 1 - (1-p['fd0'])/(1 + (age_days_midpoint/p['ad0'])**p['gd'])
     q = p['d1'] + (1-p['d1'])/(1 + (id_/p['ID0'])**p['kd']*fd)
 
@@ -244,7 +244,7 @@ def _non_het_prev(
     return jnp.stack([pos_M, pos_PCR, inc, b, phi, q])
 
 
-def _calculate_immunity(foi, rate, delay, re, dtype):
+def _calculate_immunity(foi, rate, delay, re):
     init_imm = (foi[0]/(foi[0] * rate + 1))/(1/delay + re[0])
     _, other_imm = scan(
         lambda prev_imm, i: (
