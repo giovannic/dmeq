@@ -1,20 +1,25 @@
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
-import jax
-import jax.numpy as jnp
-from jax.lax import fori_loop, scan
-from jax import vmap
+from ._backend import backend
+
+#: An array of whichever backend is in force. Spelled as an alias rather than as
+#: ``jnp.ndarray`` because naming a backend's array type in an annotation would
+#: import that backend at class creation, and importing this module imports
+#: neither. See ``_backend.py``.
+Array = Any
 
 def _resolve_dtype(dtype):
     """Float dtype to solve in.
 
-    ``None`` means "whatever JAX is configured for": float64 when the caller has
-    enabled ``jax_enable_x64``, float32 otherwise. Importing this module never
-    changes that setting -- it is the caller's to make.
+    ``None`` means "whatever the backend defaults to": under jax that is
+    float64 when the caller has enabled ``jax_enable_x64`` and float32
+    otherwise, and under numpy it is always float64. Importing this module
+    never changes that setting -- it is the caller's to make.
     """
+    xp = backend().xp
     if dtype is None:
-        return jnp.result_type(float)
-    return jnp.dtype(dtype)
+        return xp.result_type(float)
+    return xp.dtype(dtype)
 
 def _default_parameters():
     return {
@@ -76,12 +81,12 @@ class AgeGrid(NamedTuple):
     in the model are per day, so the day-scaled quantities are what the solver
     actually uses.
     """
-    years: jnp.ndarray        # (n_age,) lower edge of each class, years
-    days: jnp.ndarray         # (n_age,) lower edge of each class, days
-    widths: jnp.ndarray       # (n_age - 1,) width of each non-terminal class, days
-    midpoints: jnp.ndarray    # (n_age,) class midpoint in days; terminal = its lower edge
-    ageing: jnp.ndarray       # (n_age,) ageing rate per day, terminal class zero
-    age20: jnp.ndarray        # index of the class closest to 20 years
+    years: Array        # (n_age,) lower edge of each class, years
+    days: Array         # (n_age,) lower edge of each class, days
+    widths: Array       # (n_age - 1,) width of each non-terminal class, days
+    midpoints: Array    # (n_age,) class midpoint in days; terminal = its lower edge
+    ageing: Array       # (n_age,) ageing rate per day, terminal class zero
+    age20: Array        # index of the class closest to 20 years
 
 def ageing_rates(ages, dtype=None):
     """Per-day rate of ageing out of each age class: ``1/diff``, terminal zero.
@@ -90,9 +95,10 @@ def ageing_rates(ages, dtype=None):
     nobody ages out of it and its rate is zero -- which makes its death rate the
     only outflow (see :func:`age_proportions`).
     """
+    xp = backend().xp
     dtype = _resolve_dtype(dtype)
-    age_days = jnp.asarray(ages, dtype=dtype) * 365.
-    return jnp.append(1. / jnp.diff(age_days), jnp.zeros((), dtype=dtype))
+    age_days = xp.asarray(ages, dtype=dtype) * 365.
+    return xp.append(1. / xp.diff(age_days), xp.zeros((), dtype=dtype))
 
 def age_proportions(ages, mu, dtype=None):
     """Equilibrium proportion of the population in each age class.
@@ -111,22 +117,28 @@ def age_proportions(ages, mu, dtype=None):
     class. It must be strictly positive in the terminal class, which has ``r =
     0`` and so would otherwise accumulate the whole population.
     """
+    be = backend()
+    xp = be.xp
     dtype = _resolve_dtype(dtype)
     r = ageing_rates(ages, dtype=dtype)
-    mu = jnp.broadcast_to(jnp.asarray(mu, dtype=dtype), r.shape)
+    mu = xp.broadcast_to(xp.asarray(mu, dtype=dtype), r.shape)
     _check_terminal_mortality(mu)
     pop_0 = 1. / (r[0] + mu[0])
-    _, pop_rest = scan(
+    _, pop_rest = be.scan(
         lambda prev, x: (prev * x[0] / (x[1] + x[2]),) * 2,
         pop_0,
         (r[:-1], r[1:], mu[1:])
     )
-    pop = jnp.append(pop_0, pop_rest)
-    return pop / jnp.sum(pop)
+    pop = xp.append(pop_0, pop_rest)
+    return pop / xp.sum(pop)
 
 def _check_terminal_mortality(mu):
-    """Reject a zero terminal death rate, when it can be seen at trace time."""
-    if isinstance(mu, jax.core.Tracer):
+    """Reject a zero terminal death rate, when it can be seen at trace time.
+
+    Under numpy every value is concrete, so the check always runs; under jax it
+    is skipped for a traced ``mu``.
+    """
+    if backend().is_tracer(mu):
         return  # a traced value cannot be inspected; the caller owns this one
     if not float(mu[-1]) > 0.:
         raise ValueError(
@@ -149,23 +161,25 @@ def deathrates_to_grid(age_high, deathrates, ages):
     edge, so a class starting exactly on a band boundary belongs to the band
     above. Classes past the last band edge take the last band's rate.
     """
-    age_high = jnp.asarray(age_high)
-    deathrates = jnp.asarray(deathrates)
-    idx = jnp.searchsorted(age_high, jnp.asarray(ages), side='right')
-    return deathrates[..., jnp.minimum(idx, age_high.shape[-1] - 1)]
+    xp = backend().xp
+    age_high = xp.asarray(age_high)
+    deathrates = xp.asarray(deathrates)
+    idx = xp.searchsorted(age_high, xp.asarray(ages), side='right')
+    return deathrates[..., xp.minimum(idx, age_high.shape[-1] - 1)]
 
 def age_grid(ages, dtype=None):
+    xp = backend().xp
     dtype = _resolve_dtype(dtype)
-    years = jnp.asarray(ages, dtype=dtype)
+    years = xp.asarray(ages, dtype=dtype)
     days = years * 365.
-    widths = jnp.diff(days)
+    widths = xp.diff(days)
     return AgeGrid(
         years=years,
         days=days,
         widths=widths,
-        midpoints=jnp.append(days[:-1] + widths / 2., days[-1]),
-        ageing=jnp.append(1. / widths, jnp.zeros((), dtype=dtype)),
-        age20=jnp.argmin(jnp.abs(years - 20.))
+        midpoints=xp.append(days[:-1] + widths / 2., days[-1]),
+        ageing=xp.append(1. / widths, xp.zeros((), dtype=dtype)),
+        age20=xp.argmin(xp.abs(years - 20.))
     )
 
 # -- immunity -----------------------------------------------------------------
@@ -178,15 +192,15 @@ class Immunity(NamedTuple):
     afterwards for detectability and onward infectiousness. A replacement
     immunity model can be checked structurally against this.
     """
-    foi: jnp.ndarray   # force of infection per day
-    phi: jnp.ndarray   # probability an infection is clinical
-    q: jnp.ndarray     # probability an asymptomatic infection is detected by microscopy
-    cA: jnp.ndarray    # onward infectiousness of state A
-    b: jnp.ndarray     # probability an infectious bite infects
-    ib: jnp.ndarray    # pre-erythrocytic immunity
-    ic: jnp.ndarray    # acquired clinical immunity
-    id_: jnp.ndarray   # detection immunity
-    icm: jnp.ndarray   # maternal clinical immunity
+    foi: Array   # force of infection per day
+    phi: Array   # probability an infection is clinical
+    q: Array     # probability an asymptomatic infection is detected by microscopy
+    cA: Array    # onward infectiousness of state A
+    b: Array     # probability an infectious bite infects
+    ib: Array    # pre-erythrocytic immunity
+    ic: Array    # acquired clinical immunity
+    id_: Array   # detection immunity
+    icm: Array   # maternal clinical immunity
 
 def griffin_immunity(eps, grid, re, p):
     """Griffin's immunity model: entomological inoculation rate to ``Immunity``.
@@ -201,6 +215,8 @@ def griffin_immunity(eps, grid, re, p):
     The age grid is needed and not just ``re``, because maternal immunity ``icm``
     is a decaying share of the clinical immunity of a 20 year old.
     """
+    xp = backend().xp
+
     # calculate pre-erythrocytic immunity IB
     ib = _calculate_immunity(eps, p['ub'], p['db'], re)
 
@@ -222,9 +238,9 @@ def griffin_immunity(eps, grid, re, p):
     # calculate maternal clinical immunity,
     # assumed to be at birth a proportion of the acquired immunity of a
     # 20 year old
-    icm = jnp.append(
+    icm = xp.append(
         ic[grid.age20] * p['PM'] * p['dm'] / grid.widths * (
-            jnp.exp(-grid.days[:-1] / p['dm']) - jnp.exp(-grid.days[1:] / p['dm'])
+            xp.exp(-grid.days[:-1] / p['dm']) - xp.exp(-grid.days[1:] / p['dm'])
         ),
         0.
     )
@@ -260,12 +276,14 @@ def _solve(
     ``immunity`` is the immunity model, defaulting to :func:`griffin_immunity`;
     a replacement takes ``(eps, grid, re, p)`` and returns an :class:`Immunity`.
     """
+    be = backend()
+    xp = be.xp
     dtype = _resolve_dtype(dtype)
     if age_bins_years is None:
-        ages = jnp.arange(100, dtype=dtype)
+        ages = xp.arange(100, dtype=dtype)
     else:
-        ages = jnp.asarray(age_bins_years, dtype=dtype)
-    nodes = jnp.array([
+        ages = xp.asarray(age_bins_years, dtype=dtype)
+    nodes = xp.array([
         -4.8594628,
         -3.5818235,
         -2.4843258,
@@ -277,7 +295,7 @@ def _solve(
         3.5818235,
         4.8594628
     ], dtype=dtype)
-    weights = jnp.array([
+    weights = xp.array([
         4.310653e-06,
         7.580709e-04,
         1.911158e-02,
@@ -290,26 +308,26 @@ def _solve(
         4.310653e-06
     ], dtype=dtype)
     if gh_nodes is not None:
-        nodes = jnp.asarray(gh_nodes, dtype=dtype)
+        nodes = xp.asarray(gh_nodes, dtype=dtype)
     if gh_weights is not None:
-        weights = jnp.asarray(gh_weights, dtype=dtype)
+        weights = xp.asarray(gh_weights, dtype=dtype)
     grid = age_grid(ages, dtype=dtype)
 
     # calculate proportion in each age group
     prop = age_proportions(ages, p['eta'], dtype=dtype)
 
     # rate of leaving an age class: ageing plus death
-    re = grid.ageing + jnp.asarray(p['eta'], dtype=dtype)
+    re = grid.ageing + xp.asarray(p['eta'], dtype=dtype)
 
     # calculate relative biting rate
-    psi = 1. - p['rho'] * jnp.exp(-grid.midpoints/p['a0'])
+    psi = 1. - p['rho'] * xp.exp(-grid.midpoints/p['a0'])
 
     # calculate EIR scaling factor over Gaussian quadrature nodes
-    zeta = jnp.exp(-p['s2']*.5 + jnp.sqrt(p['s2'])*nodes)
+    zeta = xp.exp(-p['s2']*.5 + xp.sqrt(p['s2'])*nodes)
 
     # vmap over the quadrature nodes only; everything else (including dtype) is
     # closed over, so no non-array argument has to travel through vmap.
-    het_prev = vmap(
+    het_prev = be.vmap(
         lambda zeta_i: _non_het_prev(
             grid,
             prop,
@@ -321,12 +339,12 @@ def _solve(
             dtype
         )
     )
-    return jnp.append(
-        jnp.sum(
-            het_prev(zeta) * jnp.expand_dims(weights, [1,2]),
+    return xp.append(
+        xp.sum(
+            het_prev(zeta) * xp.expand_dims(weights, [1,2]),
             axis = 0
         ), # prev and incidence statistics
-        jnp.expand_dims(prop, 0), # proportions
+        xp.expand_dims(prop, 0), # proportions
         axis = 0
     )
 
@@ -360,18 +378,34 @@ def _non_het_prev(
     aP = p['rT'] * aT/betaP
     aD = (1-p['ft'])*phi*foi/betaD
 
+    be = backend()
+    xp = be.xp
+
     r = grid.ageing
-    states = jnp.zeros((6, grid.years.size), dtype=dtype)
-    states = states.at[:,0].set(
+    states = xp.zeros((6, grid.years.size), dtype=dtype)
+    states = be.set_at(
+        states,
+        (slice(None), 0),
         _compute_state(0, 0, 0, 0, 0, 0, betaT,
               betaD, betaP, betaA, betaU, aT, aD, aP, phi, foi, prop, p)
     )
 
     # calculate states
-    states = fori_loop(
+    #
+    # NOTE: `_next_state` is handed the `states` closed over from above, not the
+    # loop's own carry `a`. That is what this loop has always done and it is
+    # preserved verbatim here, because every backend has to agree with the
+    # numbers dmeq produces today. It means classes from index 2 up read a
+    # zero-filled predecessor rather than the class below them, so they are
+    # solved as if nobody aged into them. Fixing it is a behaviour change and
+    # not a refactor: it moves microscopy prevalence under 5 substantially.
+    # `tests/test_backend.py` pins the current behaviour on both backends.
+    states = be.fori_loop(
         1,
         states.shape[1],
-        lambda i, a: a.at[:, i].set(
+        lambda i, a: be.set_at(
+            a,
+            (slice(None), i),
             _next_state(states, i, betaT, betaD, betaP, betaA, betaU,
                 aT, aD, aP, phi, foi, prop, p, r)
         ),
@@ -386,19 +420,21 @@ def _non_het_prev(
     inc = (states[5] + states[4] + states[3]) * foi * phi
 
     # stack the return values
-    return jnp.stack([pos_M, pos_PCR, inc, imm.b, phi, q])
+    return xp.stack([pos_M, pos_PCR, inc, imm.b, phi, q])
 
 
 def _calculate_immunity(foi, rate, delay, re):
+    be = backend()
+    xp = be.xp
     init_imm = (foi[0]/(foi[0] * rate + 1))/(1/delay + re[0])
-    _, other_imm = scan(
+    _, other_imm = be.scan(
         lambda prev_imm, i: (
             _next_immunity(foi[i], rate, re[i], prev_imm, delay),
         ) * 2,
         init_imm,
-        jnp.arange(1, len(foi))
+        xp.arange(1, len(foi))
     )
-    return jnp.append(init_imm, other_imm)
+    return xp.append(init_imm, other_imm)
 
 def _next_immunity(foi, rate, re, imm, delay):
     return (foi/(foi * rate + 1) + re*imm)/(1/delay + re)
@@ -421,7 +457,7 @@ def _compute_state(i, bT, bD, bP, rA, rU, betaT, betaD, betaP, betaA, betaU,
     A = (rA + (1-phi[i])*Y*foi[i] + p['rD']*D)/(
             betaA[i] + (1-phi[i])*foi[i])
     U = (rU + p['rA']*A)/betaU[i]
-    return jnp.array([
+    return backend().xp.array([
         aT[i] * Y + bT, #T
         D, #D
         aP[i] * Y + bP, #P
