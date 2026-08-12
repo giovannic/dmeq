@@ -146,18 +146,14 @@ def test_a_replacement_immunity_model_runs_on_both():
     np.testing.assert_allclose(out['numpy'], out['jax'], rtol=1e-13, atol=1e-16)
 
 
-def test_the_state_loop_reads_the_pre_loop_states_on_both_backends():
-    """Characterisation, not approval: `_non_het_prev`'s loop body closes over
-    the `states` from before the loop rather than over the loop's own carry, so
-    for age class 2 upwards the inflow terms `bT/bD/bP/rA/rU` are read from a
-    zero-filled column and come out zero. Every class above the second is
-    therefore solved as if nobody aged into it.
+def test_the_state_loop_carries_the_class_below_on_both_backends():
+    """The loop body reads its own carry, so ageing actually flows up the grid.
 
-    That is what `solve` has always computed and what msinf has fitted, so both
-    backends must reproduce it or the refactor has changed the model. Pinned
-    here so that a future fix has to be a deliberate one with a decision behind
-    it -- see the note in `_non_het_prev`. Fixing it moves microscopy prevalence
-    under 5 substantially and clinical incidence barely.
+    The regression this guards is the one fixed in 2026-08: the body used to
+    close over the `states` from before the loop, which is zero-filled above
+    class 0, so classes from index 2 up were solved with no inflow at all. The
+    signature was a prevalence curve that could not climb -- it stayed under
+    0.35 through infancy where the sequential recursion takes it past 0.6.
     """
     p = default_parameters()
     for name in BACKENDS:
@@ -166,11 +162,8 @@ def test_the_state_loop_reads_the_pre_loop_states_on_both_backends():
                 {**p, 's2': 1e-300}, dtype='float64', age_bins_years=GRIFFIN,
                 gh_nodes=np.zeros(1), gh_weights=np.ones(1),
             ))
-        # class 1 has a real predecessor (class 0 is set before the loop) and
-        # class 2 does not, which is the signature of the frozen closure
-        assert out[0, 1] > 0., name
         prev = out[0] / out[6]
-        assert prev[:20].max() < 0.35, name  # sequential recursion gives > 0.6
+        assert prev[:20].max() > 0.6, name
 
 
 def test_numpy_backend_checks_the_terminal_death_rate():

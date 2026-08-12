@@ -173,13 +173,18 @@ def age_grid(ages, dtype=None):
     years = xp.asarray(ages, dtype=dtype)
     days = years * 365.
     widths = xp.diff(days)
+    midpoints = xp.append(days[:-1] + widths / 2., days[-1])
     return AgeGrid(
         years=years,
         days=days,
         widths=widths,
-        midpoints=xp.append(days[:-1] + widths / 2., days[-1]),
+        midpoints=midpoints,
         ageing=xp.append(1. / widths, xp.zeros((), dtype=dtype)),
-        age20=xp.argmin(xp.abs(years - 20.))
+        # the class whose *midpoint* is closest to 20 years, as
+        # malariaEquilibrium's `human_equilibrium_no_het` picks it. Comparing
+        # lower edges instead lands one class higher on grids with an edge at
+        # exactly 20, which reads a higher clinical immunity into `icm`.
+        age20=xp.argmin(xp.abs(midpoints - 20. * 365.))
     )
 
 # -- immunity -----------------------------------------------------------------
@@ -392,21 +397,19 @@ def _non_het_prev(
 
     # calculate states
     #
-    # NOTE: `_next_state` is handed the `states` closed over from above, not the
-    # loop's own carry `a`. That is what this loop has always done and it is
-    # preserved verbatim here, because every backend has to agree with the
-    # numbers dmeq produces today. It means classes from index 2 up read a
-    # zero-filled predecessor rather than the class below them, so they are
-    # solved as if nobody aged into them. Fixing it is a behaviour change and
-    # not a refactor: it moves microscopy prevalence under 5 substantially.
-    # `tests/test_backend.py` pins the current behaviour on both backends.
+    # `_next_state` reads the loop's own carry `a`, so class `i` sees class
+    # `i-1` as it was just solved: the inflow terms `bT/bD/bP/rA/rU` are the
+    # people ageing in from the class below. Until 2026-08 this read the
+    # `states` closed over from above instead, which is zero-filled everywhere
+    # but class 0, so every class from index 2 up was solved as if nobody aged
+    # into it -- about 12% low on microscopy prevalence at every age above 1.
     states = be.fori_loop(
         1,
         states.shape[1],
         lambda i, a: be.set_at(
             a,
             (slice(None), i),
-            _next_state(states, i, betaT, betaD, betaP, betaA, betaU,
+            _next_state(a, i, betaT, betaD, betaP, betaA, betaU,
                 aT, aD, aP, phi, foi, prop, p, r)
         ),
         states

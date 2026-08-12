@@ -57,7 +57,9 @@ def test_age_grid_publishes_what_solve_used_to_inline():
         np.asarray(grid.midpoints)[:-1], days[:-1] + np.diff(days) / 2., rtol=1e-14
     )
     assert np.asarray(grid.midpoints)[-1] == days[-1]
-    assert GRIFFIN[int(grid.age20)] == 20.
+    # the class whose midpoint is nearest 20 years, which on this grid is
+    # [19.5, 20) -- not the class starting exactly at 20
+    assert GRIFFIN[int(grid.age20)] == 19.5
 
 
 def test_age_proportions_reproduce_the_exponential_distribution():
