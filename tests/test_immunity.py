@@ -9,6 +9,7 @@ from dmeq import (
     Immunity,
     age_grid,
     age_proportions,
+    calculate_immunity,
     default_parameters,
     griffin_immunity,
     solve,
@@ -39,9 +40,9 @@ def test_default_injection_is_the_incumbent():
 def test_immunity_returns_the_documented_fields():
     imm = griffin_immunity(*_inputs())
     assert isinstance(imm, Immunity)
-    assert set(Immunity._fields) >= {
-        'foi', 'phi', 'q', 'cA', 'b', 'ib', 'ic', 'id_', 'icm'
-    }
+    # exactly these, and not the internal levels: the contract a candidate
+    # satisfies is the incumbent's own return type
+    assert Immunity._fields == ('foi', 'phi', 'q', 'b')
     for name in Immunity._fields:
         value = np.asarray(getattr(imm, name))
         assert value.shape == GRIFFIN.shape, name
@@ -72,18 +73,37 @@ def test_immunity_depends_on_the_states_not_at_all():
 
 
 def test_maternal_immunity_uses_clinical_immunity_at_age_twenty():
-    """icm needs the age grid, not just re."""
-    imm = griffin_immunity(*_inputs())
+    """icm needs the age grid, not just re.
+
+    icm is internal to the immunity model rather than a field of the contract,
+    so it is checked through `phi`, which is the only way it reaches the solve.
+    Rebuilding it here from the public recursion is the point: it pins that the
+    maternal term is the ic-at-20 decay and that it is load-bearing in `phi`.
+    """
     eps, grid, re, p = _inputs()
+    imm = griffin_immunity(eps, grid, re, p)
     days = np.asarray(grid.days)
-    expected_0 = (
-        float(imm.ic[grid.age20]) * p['PM'] * p['dm'] / (days[1] - days[0])
-        * (np.exp(-days[0] / p['dm']) - np.exp(-days[1] / p['dm']))
+
+    ic = np.asarray(calculate_immunity(imm.foi, p['uc'], p['dc'], re))
+    icm = np.append(
+        float(ic[grid.age20]) * p['PM'] * p['dm'] / np.asarray(grid.widths)
+        * (np.exp(-days[:-1] / p['dm']) - np.exp(-days[1:] / p['dm'])),
+        0.
     )
-    assert float(imm.icm[0]) == pytest.approx(expected_0, rel=1e-12)
-    assert float(imm.icm[-1]) == 0.
+    assert icm[0] > 0.
+    assert icm[-1] == 0.
     # decays over a couple of months, so it is negligible by school age
-    assert float(imm.icm[np.searchsorted(GRIFFIN, 5.)]) < 1e-6 * float(imm.icm[0])
+    assert icm[np.searchsorted(GRIFFIN, 5.)] < 1e-6 * icm[0]
+
+    def clinical(maternal):
+        return p['phi0'] * (p['phi1'] + (1 - p['phi1']) / (
+            1 + ((ic + maternal) / p['IC0']) ** p['kc']
+        ))
+
+    np.testing.assert_allclose(np.asarray(imm.phi), clinical(icm), rtol=1e-9)
+    # and it changes `phi` in infancy, so dropping the grid would not be free
+    assert float(imm.phi[0]) == pytest.approx(clinical(icm)[0], rel=1e-9)
+    assert abs(float(imm.phi[0]) - clinical(np.zeros_like(icm))[0]) > 1e-3
 
 
 def test_a_replacement_immunity_model_is_used():
@@ -92,17 +112,7 @@ def test_a_replacement_immunity_model_is_used():
 
     def flat_immunity(eps, grid, re, p):
         ones = jnp.ones_like(eps)
-        return Immunity(
-            foi=0.5 * eps,
-            phi=0.1 * ones,
-            q=0.3 * ones,
-            cA=0.05 * ones,
-            b=0.5 * ones,
-            ib=jnp.zeros_like(eps),
-            ic=jnp.zeros_like(eps),
-            id_=jnp.zeros_like(eps),
-            icm=jnp.zeros_like(eps),
-        )
+        return Immunity(foi=0.5 * eps, phi=0.1 * ones, q=0.3 * ones, b=0.5 * ones)
 
     out = np.asarray(solve(
         p, dtype='float64', age_bins_years=GRIFFIN, immunity=flat_immunity

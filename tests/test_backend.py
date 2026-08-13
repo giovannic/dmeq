@@ -18,6 +18,7 @@ from dmeq import (
     age_grid,
     age_proportions,
     ageing_rates,
+    calculate_immunity,
     deathrates_to_grid,
     default_parameters,
     griffin_immunity,
@@ -103,6 +104,25 @@ def test_griffin_immunity_agrees():
         )
 
 
+def test_calculate_immunity_agrees():
+    """The published recursion on its own.
+
+    `Immunity` no longer carries the levels, so the loop above reaches ib, ic
+    and id_ only through b, phi and q. This pins the scan itself, which is what
+    an immunity candidate builds on.
+    """
+    p = default_parameters()
+
+    def go():
+        grid = age_grid(GRIFFIN, dtype='float64')
+        re = grid.ageing + p['eta']
+        return calculate_immunity(p['EIR'] / 365. + 0. * grid.midpoints,
+                                  p['ub'], p['db'], re)
+
+    got = both(go)
+    np.testing.assert_allclose(got['numpy'], got['jax'], rtol=1e-12, atol=0.)
+
+
 @pytest.mark.parametrize('eta', [default_parameters()['eta'], MORTALITY],
                          ids=['uniform', 'age-varying'])
 def test_solve_agrees(eta):
@@ -132,11 +152,7 @@ def test_a_replacement_immunity_model_runs_on_both():
     def flat_immunity(eps, grid, re, p):
         xp = backend().xp
         ones = xp.ones_like(eps)
-        zeros = xp.zeros_like(eps)
-        return Immunity(
-            foi=0.5 * eps, phi=0.1 * ones, q=0.3 * ones, cA=0.05 * ones,
-            b=0.5 * ones, ib=zeros, ic=zeros, id_=zeros, icm=zeros,
-        )
+        return Immunity(foi=0.5 * eps, phi=0.1 * ones, q=0.3 * ones, b=0.5 * ones)
 
     out = both(lambda: solve(
         default_parameters(), dtype='float64', age_bins_years=GRIFFIN,

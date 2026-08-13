@@ -190,22 +190,23 @@ def age_grid(ages, dtype=None):
 # -- immunity -----------------------------------------------------------------
 
 class Immunity(NamedTuple):
-    """What the equilibrium state solve needs from an immunity model, plus the
-    immunity levels themselves for plotting and diagnostics.
+    """Everything the equilibrium state solve reads from an immunity model.
 
-    Only ``foi`` and ``phi`` feed the states; ``q`` and ``cA`` are read off
-    afterwards for detectability and onward infectiousness. A replacement
-    immunity model can be checked structurally against this.
+    These four fields and no others: ``foi`` and ``phi`` feed the state
+    recursion, ``q`` is read off it for detectability, and ``b`` is reported for
+    diagnostics. A replacement immunity model returns this, so the contract a
+    candidate must satisfy and the incumbent's own return type are the same
+    thing.
+
+    The immunity *levels* -- ib, ic, id_, icm -- are internal to
+    :func:`griffin_immunity` and deliberately not here. They are Griffin's
+    parameterization rather than the solve's requirement, and a candidate that
+    invented its own has nothing to put in them.
     """
     foi: Array   # force of infection per day
     phi: Array   # probability an infection is clinical
     q: Array     # probability an asymptomatic infection is detected by microscopy
-    cA: Array    # onward infectiousness of state A
     b: Array     # probability an infectious bite infects
-    ib: Array    # pre-erythrocytic immunity
-    ic: Array    # acquired clinical immunity
-    id_: Array   # detection immunity
-    icm: Array   # maternal clinical immunity
 
 def griffin_immunity(eps, grid, re, p):
     """Griffin's immunity model: entomological inoculation rate to ``Immunity``.
@@ -223,7 +224,7 @@ def griffin_immunity(eps, grid, re, p):
     xp = backend().xp
 
     # calculate pre-erythrocytic immunity IB
-    ib = _calculate_immunity(eps, p['ub'], p['db'], re)
+    ib = calculate_immunity(eps, p['ub'], p['db'], re)
 
     b = p['b0']*(p['b1'] + (1-p['b1'])/(1+(ib/p['IB0'])**p['kb']))
 
@@ -232,13 +233,10 @@ def griffin_immunity(eps, grid, re, p):
 
     # calculate probability that an asymptomatic infection (state A) will be
     # detected by microscopy
-    ic = _calculate_immunity(foi, p['uc'], p['dc'], re)
-    id_ = _calculate_immunity(foi, p['ud'], p['dd'], re)
+    ic = calculate_immunity(foi, p['uc'], p['dc'], re)
+    id_ = calculate_immunity(foi, p['ud'], p['dd'], re)
     fd = 1 - (1-p['fd0'])/(1 + (grid.midpoints/p['ad0'])**p['gd'])
     q = p['d1'] + (1-p['d1'])/(1 + (id_/p['ID0'])**p['kd']*fd)
-
-    # calculate onward infectiousness to mosquitoes
-    cA = p['cU'] + (p['cD']-p['cU'])*q**p['g_inf']
 
     # calculate maternal clinical immunity,
     # assumed to be at birth a proportion of the acquired immunity of a
@@ -256,9 +254,7 @@ def griffin_immunity(eps, grid, re, p):
         1 + ((ic+icm)/p['IC0'])**p['kc']
     ))
 
-    return Immunity(
-        foi=foi, phi=phi, q=q, cA=cA, b=b, ib=ib, ic=ic, id_=id_, icm=icm
-    )
+    return Immunity(foi=foi, phi=phi, q=q, b=b)
 
 # -- solver -------------------------------------------------------------------
 
@@ -426,7 +422,16 @@ def _non_het_prev(
     return xp.stack([pos_M, pos_PCR, inc, imm.b, phi, q])
 
 
-def _calculate_immunity(foi, rate, delay, re):
+def calculate_immunity(foi, rate, delay, re):
+    """Backward-Euler recursion for one immunity level over the age grid.
+
+    ``foi`` is the per-age-class rate of the exposure that builds this level
+    (bites for IB, infections for IC and ID), ``rate`` its saturation constant,
+    ``delay`` its decay time in days, ``re`` the per-day rate of leaving an age
+    class. Public because it is the mechanism an immunity model is built out of:
+    a replacement that wants Griffin's recursion with different exposure or
+    different constants should call this rather than restate it.
+    """
     be = backend()
     xp = be.xp
     init_imm = (foi[0]/(foi[0] * rate + 1))/(1/delay + re[0])

@@ -7,6 +7,7 @@ from .dmeq import (
     age_grid,
     age_proportions,
     ageing_rates,
+    calculate_immunity,
     deathrates_to_grid,
     griffin_immunity,
 )
@@ -24,6 +25,7 @@ __all__ = [
     'age_grid',
     'age_proportions',
     'ageing_rates',
+    'calculate_immunity',
     'deathrates_to_grid',
     'griffin_immunity',
 ]
